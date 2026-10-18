@@ -636,11 +636,14 @@ $('modeP').addEventListener('click',()=>mode('p'));$('modeR').addEventListener('
 /* LLM */
 let LLM=null,sampleFn=null,ctl=null,provider=null;
 const WORKER_URL='https://recibo-asistente.isabelmendez.workers.dev/';
-async function workerRaw(messages,signal){const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,max_tokens:3500})});
-  if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();return String(j.text||'');}
+async function workerRaw(messages,signal){const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,max_tokens:2200})});
+  if(r.status===429)throw{code:'rate_limited'};if(!r.ok){let d='';try{const j=await r.json();d=(j.error||'')+(j.status?' '+j.status:'')+(j.detail?' · '+j.detail:'');}catch(e){d='HTTP '+r.status;}console.warn('Worker',d);throw{code:'upstream_error',detail:d};}const j=await r.json();return String(j.text||'');}
 async function askWorker(text,signal){const raw=await workerRaw([{role:'user',content:text}],signal);
-  try{return parseJSON(raw);}catch(e){console.warn('Respuesta no JSON, se pide reparación',raw);
-    return parseJSON(await workerRaw([{role:'user',content:text},{role:'assistant',content:raw.slice(0,8000)},{role:'user',content:'Tu respuesta no fue JSON válido o quedó incompleta. Devuelve SOLO el objeto JSON completo con la forma pedida, sin texto antes ni después, con lecturas breves.'}],signal));}}
+  let d=null;try{d=parseJSON(raw);}catch(e){}
+  if(d&&Array.isArray(d.lentes)&&d.lentes.length>=4&&d.clasificacion)return d;
+  console.warn('Respuesta incompleta o no JSON, se pide reparación',raw);
+  let d2=null;try{d2=parseJSON(await workerRaw([{role:'user',content:text},{role:'assistant',content:raw.slice(0,8000)},{role:'user',content:'Tu respuesta no fue JSON válido o quedó incompleta. Devuelve SOLO el objeto JSON completo con las cuatro lentes y la clasificación, sin texto antes ni después, con lecturas de una frase.'}],signal));}catch(e){if(!d)throw e;}
+  const n=x=>x&&Array.isArray(x.lentes)?x.lentes.length:-1;return n(d2)>=n(d)?d2:d;}
 const ESTADOS=Object.keys(ST), LENTES=['Habitabilidad','Factibilidad técnica','Legitimidad social','Gobernanza y costo'];
 function prompt(rec){return `Eres la capa interpretativa de un Human Digital Twin en un ensayo de prácticas de confort residencial. Lee SOLO el registro JSON de abajo. Reglas estrictas.
 1. No calcules ni inventes números nuevos. Puedes citar los que aparecen en el registro.
@@ -648,16 +651,25 @@ function prompt(rec){return `Eres la capa interpretativa de un Human Digital Twi
 3. Distingue simulación, cálculo, documento, testimonio, supuesto, voz pública, estadística y desconocido. Un supuesto del investigador no es la voz de un residente. Una voz pública y una estadística describen el contexto, nunca a este hogar. Un testimonio sin revisar por el residente pesa menos que uno confirmado o corregido.
 4. Conserva por separado las posturas de cada residente. No las promedies ni fabriques consenso.
 5. Señala lo que falta. Una lectura generada no es evidencia de aceptación.
+7. Sé breve. Cada lista con máximo 2 elementos cortos. Escribe primero el JSON completo, sin texto antes ni después.
 6. Evalúa la alternativa B frente a la práctica actual A en cuatro lentes, en este orden. Habitabilidad, Factibilidad técnica, Legitimidad social, Gobernanza y costo.
 Responde solo con un objeto JSON, sin texto adicional, con esta forma
-{"lentes":[{"lente":"Habitabilidad","estado":"uno de ${ESTADOS.join(' | ')}","lectura":"2 a 3 frases en español","fuentes":["S2","T1"],"faltantes":["..."],"desacuerdos":["..."]}],
+{"lentes":[{"lente":"Habitabilidad","estado":"uno de ${ESTADOS.join(' | ')}","lectura":"1 o 2 frases breves en español","fuentes":["S2","T1"],"faltantes":["..."],"desacuerdos":["..."]}],
 "clasificacion":"una de: Inviabilidad técnica | Aceptabilidad en disputa | Inasequible | No proceder | Evidencia insuficiente | Candidata a piloto, seguida de una frase de justificación",
 "no_concluir":["2 o 3 conclusiones que el registro NO permite sacar"],
 "preguntas":["2 o 3 preguntas concretas para revisar con los residentes"]}
 
 REGISTRO
 ${JSON.stringify(rec)}`;}
-function parseJSON(t){t=String(t).replace(/<think>[\s\S]*?<\/think>/gi,'').trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}throw{code:'invalid_json'};}
+function fixJSON(t){const a=t.indexOf('{');if(a<0)return null;t=t.slice(a);
+  for(let k=t.length;k>0&&k>t.length-6000;k--){const c=t[k-1];if(k!==t.length&&c!==','&&c!=='}'&&c!==']'&&c!=='"')continue;
+    let s=t.slice(0,k).replace(/,\s*$/,''),st=[],inS=false,esc2=false;
+    for(const ch of s){if(inS){if(esc2)esc2=false;else if(ch==='\\')esc2=true;else if(ch==='"')inS=false;continue;}
+      if(ch==='"')inS=true;else if(ch==='{'||ch==='[')st.push(ch);else if(ch==='}'||ch===']')st.pop();}
+    if(inS)s+='"';s=s.replace(/,\s*$/,'').replace(/:\s*$/,':null');
+    const tail=st.reverse().map(x=>x==='{'?'}':']').join('');try{return JSON.parse(s+tail);}catch(e){}}
+  return null;}
+function parseJSON(t){t=String(t).replace(/<think>[\s\S]*?<\/think>/gi,'').trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}const r2=fixJSON(t);if(r2)return r2;throw{code:'invalid_json'};}
 function validate(data,rec){
   const ids=new Set(rec.items.map(i=>i.id)),w=[],recS=JSON.stringify(rec);
   if(!Array.isArray(data.lentes)||data.lentes.length!==4)w.push('No devolvió exactamente cuatro lentes.');
@@ -695,16 +707,17 @@ $('askBtn').addEventListener('click',async()=>{
   if(!REC)return;const rec=REC;ctl=new AbortController();$('askBtn').disabled=true;$('stopBtn').hidden=false;$('llmCheck').innerHTML='';$('llmOut').innerHTML='<p class="small" style="margin-top:10px">Pensando...</p>';
   try{let data;if(provider==='worker'){data=await askWorker(prompt(rec),ctl.signal);}else if(provider==='claude'){if(!sampleFn)throw{code:'not_granted'};data=await sampleFn.json(prompt(rec),{signal:ctl.signal,cache:false});}else data=await askOpenRouter(prompt(rec),ctl.signal);
     if(!data||!Array.isArray(data.lentes))throw{code:'invalid_json'};
+    data.clasificacion=data.clasificacion||'Evidencia insuficiente, respuesta incompleta del modelo';data.no_concluir=data.no_concluir||[];data.preguntas=data.preguntas||[];
     const c=String(data.clasificacion||'');data.vc=/inviab|inasequ|no proceder/i.test(c)?'s-bad':/disputa/i.test(c)?'s-warn':/insuficiente/i.test(c)?'s-info':'s-ok';
     LLM={...data,sig:JSON.stringify(rec),model:provider==='worker'?'IA del sitio':provider==='or'?$('orModel').value:'Claude'};renderLenses($('llmOut'),LLM,true);
     const w=validate(data,rec);$('llmCheck').innerHTML=w.length?`<p class="small" style="margin-top:10px"><strong>Revisión automática</strong></p><ul class="warnlist">${w.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<p class="oklist small">Revisión automática superada. Cuatro lentes, estados válidos, solo ids existentes y ningún número ajeno al registro.</p>';
     $('llmStatus').textContent=`lectura de ${LLM.model}, no es evidencia`;compare();
   }catch(e){if(e&&e.name==='AbortError')e={code:'cancelled'};
     const m={cancelled:'Lectura detenida.',not_granted:'No se dio permiso para usar Claude en esta página.',rate_limited:'Límite de solicitudes alcanzado. Intenta más tarde o con otro modelo.',invalid_json:'La respuesta no tuvo el formato esperado. Intenta de nuevo u otro modelo.',refused:'El modelo no respondió.',no_key:'Escribe tu llave de OpenRouter.',no_model:'Elige un modelo.',bad_key:'OpenRouter rechazó la llave.'};
-    $('llmOut').innerHTML=`<p class="small" style="margin-top:10px">${m[e&&e.code]||(provider==='or'?'No se pudo contactar a OpenRouter. Dentro de claude.ai no se permite; en GitHub Pages sí.':'No se pudo obtener la lectura.')}</p>`;}
+    $('llmOut').innerHTML=`<p class="small" style="margin-top:10px">${m[e&&e.code]||(provider==='or'?'No se pudo contactar a OpenRouter. Dentro de claude.ai no se permite; en GitHub Pages sí.':'No se pudo obtener la lectura.')}${e&&e.detail?' <span class="mono">'+esc(e.detail)+'</span>':(e&&e.message?' <span class="mono">'+esc(e.message)+'</span>':'')}</p>`;}
   $('askBtn').disabled=false;$('stopBtn').hidden=true;
 });
-$('stopBtn').addEventListener('click',()=>ctl&&ctl.abort());
+/*dbg*/$('stopBtn').addEventListener('click',()=>ctl&&ctl.abort());
 function norm(s){s=String(s||'').toLowerCase();if(/no viable|inasequ/.test(s))return 'rojo';if(/disputa|limitada|marginal/.test(s))return 'ámbar';if(/insuficiente/.test(s))return 'gris';return 'verde';}
 function compare(){const box=$('agree');if(!LLM||!RULES||LLM.sig!==JSON.stringify(REC)){box.hidden=true;return;}
   const rows=RULES.lentes.map((r,i)=>{const l=LLM.lentes[i]||{};return `<tr><td>${esc(r.lente)}</td><td>${esc(r.estado)}</td><td>${esc(l.estado||'sin dato')}</td><td>${norm(r.estado)===norm(l.estado)?'coinciden':'<strong>difieren</strong>'}</td></tr>`;}).join('');

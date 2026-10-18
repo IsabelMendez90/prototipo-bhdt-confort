@@ -635,6 +635,9 @@ $('modeP').addEventListener('click',()=>mode('p'));$('modeR').addEventListener('
 
 /* LLM */
 let LLM=null,sampleFn=null,ctl=null,provider=null;
+const WORKER_URL='https://recibo-asistente.isabelmendez.workers.dev/';
+async function askWorker(text,signal){const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:text}]})});
+  if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();return parseJSON(j.text||'');}
 const ESTADOS=Object.keys(ST), LENTES=['Habitabilidad','Factibilidad técnica','Legitimidad social','Gobernanza y costo'];
 function prompt(rec){return `Eres la capa interpretativa de un Human Digital Twin en un ensayo de prácticas de confort residencial. Lee SOLO el registro JSON de abajo. Reglas estrictas.
 1. No calcules ni inventes números nuevos. Puedes citar los que aparecen en el registro.
@@ -683,13 +686,14 @@ async function askOpenRouter(text,signal){
   if(r.status===429)throw{code:'rate_limited'};if(r.status===401)throw{code:'bad_key'};if(!r.ok)throw{code:'upstream_error'};
   const j=await r.json();return parseJSON(j.choices?.[0]?.message?.content||'');
 }
-(async()=>{let s=null;try{s=await window.claude?.use?.('sample');}catch(e){}sampleFn=s;if(!sampleFn){$('provClaude').disabled=true;$('provClaude').title='Disponible solo dentro de claude.ai';}const sv=store.get('bhdt-provider');setProvider(sampleFn&&sv!=='or'?'claude':'or');})();
+(async()=>{if(WORKER_URL){provider='worker';$('provClaude').closest('.field').hidden=true;$('orBox').hidden=true;$('llmStatus').textContent='usa el asistente del sitio';return;}
+  let s=null;try{s=await window.claude?.use?.('sample');}catch(e){}sampleFn=s;if(!sampleFn){$('provClaude').disabled=true;$('provClaude').title='Disponible solo dentro de claude.ai';}const sv=store.get('bhdt-provider');setProvider(sampleFn&&sv!=='or'?'claude':'or');})();
 $('askBtn').addEventListener('click',async()=>{
   if(!REC)return;const rec=REC;ctl=new AbortController();$('askBtn').disabled=true;$('stopBtn').hidden=false;$('llmCheck').innerHTML='';$('llmOut').innerHTML='<p class="small" style="margin-top:10px">Pensando...</p>';
-  try{let data;if(provider==='claude'){if(!sampleFn)throw{code:'not_granted'};data=await sampleFn.json(prompt(rec),{signal:ctl.signal,cache:false});}else data=await askOpenRouter(prompt(rec),ctl.signal);
+  try{let data;if(provider==='worker'){data=await askWorker(prompt(rec),ctl.signal);}else if(provider==='claude'){if(!sampleFn)throw{code:'not_granted'};data=await sampleFn.json(prompt(rec),{signal:ctl.signal,cache:false});}else data=await askOpenRouter(prompt(rec),ctl.signal);
     if(!data||!Array.isArray(data.lentes))throw{code:'invalid_json'};
     const c=String(data.clasificacion||'');data.vc=/inviab|inasequ|no proceder/i.test(c)?'s-bad':/disputa/i.test(c)?'s-warn':/insuficiente/i.test(c)?'s-info':'s-ok';
-    LLM={...data,sig:JSON.stringify(rec),model:provider==='or'?$('orModel').value:'Claude'};renderLenses($('llmOut'),LLM,true);
+    LLM={...data,sig:JSON.stringify(rec),model:provider==='worker'?'IA del sitio':provider==='or'?$('orModel').value:'Claude'};renderLenses($('llmOut'),LLM,true);
     const w=validate(data,rec);$('llmCheck').innerHTML=w.length?`<p class="small" style="margin-top:10px"><strong>Revisión automática</strong></p><ul class="warnlist">${w.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<p class="oklist small">Revisión automática superada. Cuatro lentes, estados válidos, solo ids existentes y ningún número ajeno al registro.</p>';
     $('llmStatus').textContent=`lectura de ${LLM.model}, no es evidencia`;compare();
   }catch(e){if(e&&e.name==='AbortError')e={code:'cancelled'};

@@ -485,7 +485,15 @@ let REC=null,AI=null,aiCtl=null,sampleFn=null;
 const WORKER_URL='https://recibo-asistente.isabelmendez.workers.dev/';
 async function askWorker(messages,system,signal,maxTokens){
   const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,system,max_tokens:maxTokens||1200})});
-  if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();if(!j.text)throw{code:'refused'};return j.text;}
+  if(r.status===429)throw{code:'rate_limited'};if(!r.ok){let d='';try{const j=await r.json();d=(j.error||'')+(j.status?' '+j.status:'')+(j.detail?' · '+j.detail:'');}catch(e){d='HTTP '+r.status;}console.warn('Worker',d);throw{code:'upstream_error',detail:d};}const j=await r.json();if(!j.text)throw{code:'refused',detail:'respuesta vacía'+(j.finish?' ('+j.finish+')':'')};return j.text;}
+async function streamWorker(messages,system,signal,onText){
+  const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,system,max_tokens:600,stream:true})});
+  if(r.status===429)throw{code:'rate_limited'};if(!r.ok){let d='';try{const j=await r.json();d=(j.error||'')+(j.status?' '+j.status:'')+(j.detail?' · '+j.detail:'');}catch(e){d='HTTP '+r.status;}throw{code:'upstream_error',detail:d};}
+  const rd=r.body.getReader(),dec=new TextDecoder();let buf='',text='';
+  for(;;){const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
+    while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!line.startsWith('data:'))continue;const d=line.slice(5).trim();if(d==='[DONE]')continue;
+      try{const j=JSON.parse(d);const c=j.choices?.[0]?.delta?.content||'';if(c){text+=c;onText(text.replace(/<think>[\s\S]*?(<\/think>|$)/gi,'').trim());}}catch(e){}}}
+  return text.replace(/<think>[\s\S]*?<\/think>/gi,'').trim();}
 async function callLLM(messages,system,signal,maxTokens){
   if(WORKER_URL)return askWorker(messages,system,signal,maxTokens);
   if(sampleFn){const msgs=system?[{role:'user',content:system+'\n\n'+messages[0].content},...messages.slice(1)]:messages;const r=await sampleFn(msgs,{signal,cache:false});return r.text;}
@@ -538,7 +546,15 @@ Responde solo un objeto JSON con esta forma
 
 REGISTRO
 ${JSON.stringify(rec)}`;}
-function parseJ(t){t=String(t).replace(/<think>[\s\S]*?<\/think>/gi,'').trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}throw{code:'invalid_json'};}
+function fixJSON(t){const a=t.indexOf('{');if(a<0)return null;t=t.slice(a);
+  for(let k=t.length;k>0&&k>t.length-6000;k--){const c=t[k-1];if(k!==t.length&&c!==','&&c!=='}'&&c!==']'&&c!=='"')continue;
+    let s=t.slice(0,k).replace(/,\s*$/,''),st=[],inS=false,esc2=false;
+    for(const ch of s){if(inS){if(esc2)esc2=false;else if(ch==='\\')esc2=true;else if(ch==='"')inS=false;continue;}
+      if(ch==='"')inS=true;else if(ch==='{'||ch==='[')st.push(ch);else if(ch==='}'||ch===']')st.pop();}
+    if(inS)s+='"';s=s.replace(/,\s*$/,'').replace(/:\s*$/,':null');
+    const tail=st.reverse().map(x=>x==='{'?'}':']').join('');try{return JSON.parse(s+tail);}catch(e){}}
+  return null;}
+function parseJ(t){t=String(t).replace(/<think>[\s\S]*?<\/think>/gi,'').trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}const r2=fixJSON(t);if(r2)return r2;throw{code:'invalid_json'};}
 function checkAI(d,rec){
   const ids=new Set(rec.items.map(i=>i.id)),w=[],nums=new Set((JSON.stringify(rec).replace(/(\d),(\d{3})/g,'$1$2').match(/\d+(?:\.\d+)?/g)||[]));
   if(!Array.isArray(d.perspectivas)||d.perspectivas.length!==4)w.push('No devolvió exactamente cuatro perspectivas.');
@@ -576,14 +592,14 @@ $('aiStatus').textContent='Cargando...';
   if(sampleFn){$('aiStatus').textContent='Usa tu cuenta de Claude. Recibe el mismo registro que las reglas.';}
   else{$('orBox').hidden=false;$('aiStatus').textContent='Fuera de claude.ai, usa una llave gratuita de OpenRouter.';$('chatStatus').textContent='Para platicar, escribe tu llave de OpenRouter en la sección 4.';loadOR();}})();
 $('aiBtn').addEventListener('click',async()=>{
-  if(!REC)return;const rec=REC,rules=LASTR;aiCtl=new AbortController();$('aiBtn').disabled=true;$('aiStop').hidden=false;$('aiOut').innerHTML='<p class="small">Leyendo el escenario...</p>';
-  try{let d;if(!WORKER_URL&&sampleFn){d=await sampleFn.json(aiPrompt(rec),{signal:aiCtl.signal,cache:false});}else{const raw=await callLLM([{role:'user',content:aiPrompt(rec)}],'',aiCtl.signal,3000);
+  if(!REC)return;const rec=REC,rules=LASTR;aiCtl=new AbortController();$('aiBtn').disabled=true;$('aiStop').hidden=false;$('aiOut').innerHTML='<p class="small" id="aiWait">Leyendo el escenario...</p>';const t0=Date.now(),tk=setInterval(()=>{const w=document.getElementById('aiWait');if(w)w.textContent='Leyendo el escenario... '+Math.round((Date.now()-t0)/1000)+' s';else clearInterval(tk);},1000);
+  try{let d;if(!WORKER_URL&&sampleFn){d=await sampleFn.json(aiPrompt(rec),{signal:aiCtl.signal,cache:false});}else{const raw=await callLLM([{role:'user',content:aiPrompt(rec)}],'',aiCtl.signal,1000);
       try{d=parseJ(raw);}catch(e1){console.warn('Respuesta no JSON, se pide reparación',raw);
-        d=parseJ(await callLLM([{role:'user',content:aiPrompt(rec)},{role:'assistant',content:String(raw).slice(0,6000)},{role:'user',content:'Tu respuesta no fue JSON válido o quedó incompleta. Devuelve SOLO el objeto JSON completo con la forma pedida, sin texto antes ni después, con textos breves.'}],'',aiCtl.signal,3000));}}
+        d=parseJ(await callLLM([{role:'user',content:aiPrompt(rec)},{role:'assistant',content:String(raw).slice(0,6000)},{role:'user',content:'Tu respuesta no fue JSON válido o quedó incompleta. Devuelve SOLO el objeto JSON completo con la forma pedida, sin texto antes ni después, con textos breves.'}],'',aiCtl.signal,1000));}}
     if(!d||!Array.isArray(d.perspectivas))throw{code:'invalid_json'};
     AI={data:d,rules,sig:JSON.stringify(rec),model:WORKER_URL?'IA':(sampleFn?'Claude':$('orModel').value),warn:checkAI(d,rec)};renderAI();}
   catch(e){if(e&&e.name==='AbortError')e={code:'cancelled'};const m={cancelled:'Lectura detenida.',not_granted:'No se dio permiso para usar Claude en esta página.',rate_limited:'Se alcanzó el límite de solicitudes. Intenta más tarde.',invalid_json:'La respuesta no tuvo el formato esperado. Intenta de nuevo.',no_key:'Escribe tu llave de OpenRouter.',no_model:'Elige un modelo.',bad_key:'OpenRouter rechazó la llave.'};
-    $('aiOut').innerHTML=`<p class="small">${m[e&&e.code]||'No se pudo obtener la lectura.'}</p>`;if(e&&e.code==='not_granted')$('aiBtn').hidden=true;}
+    console.warn(e);$('aiOut').innerHTML=`<p class="small">${m[e&&e.code]||'No se pudo obtener la lectura.'}${e&&e.detail?' <span class="mono">'+esc(e.detail)+'</span>':(e&&e.message?' <span class="mono">'+esc(e.message)+'</span>':'')}</p>`;if(e&&e.code==='not_granted')$('aiBtn').hidden=true;}
   $('aiBtn').disabled=false;$('aiStop').hidden=true;});
 $('aiStop').addEventListener('click',()=>aiCtl&&aiCtl.abort());
 let LASTR=null;
@@ -605,9 +621,10 @@ async function sendChat(q){
   q=String(q||'').trim();if(!q||!REC)return;CHAT.push({role:'user',content:q});CHAT.push({role:'assistant',content:'Pensando...'});drawChat();
   $('chatBtn').disabled=true;chatCtl=new AbortController();
   const hist=CHAT.slice(0,-1).slice(-9);
-  try{const t=await callLLM(hist,chatSystem(),chatCtl.signal);CHAT[CHAT.length-1].content=String(t||'').trim()||'No obtuve respuesta. Intenta de nuevo.';}
-  catch(e){const m={not_granted:'No se dio permiso para usar Claude en esta página.',rate_limited:'Hay muchas preguntas en este momento. Intenta en un minuto.',no_key:'Escribe tu llave de OpenRouter en la sección 4.',no_model:'Elige un modelo en la sección 4.',bad_key:'OpenRouter rechazó la llave.'};CHAT[CHAT.length-1].content=m[e&&e.code]||'No pude responder ahora. Intenta de nuevo.';}
-  $('chatBtn').disabled=false;drawChat();}
+  const t0=Date.now(),tick=setInterval(()=>{const m=CHAT[CHAT.length-1];if(m.content.startsWith('Pensando')){m.content='Pensando... '+Math.round((Date.now()-t0)/1000)+' s';drawChat();}},1000);
+  try{const t=WORKER_URL?await streamWorker(hist,chatSystem(),chatCtl.signal,x=>{CHAT[CHAT.length-1].content=x||'Pensando...';drawChat();}):await callLLM(hist,chatSystem(),chatCtl.signal,600);CHAT[CHAT.length-1].content=String(t||'').trim()||'No obtuve respuesta. Intenta de nuevo.';}
+  catch(e){const m={not_granted:'No se dio permiso para usar Claude en esta página.',rate_limited:'Hay muchas preguntas en este momento. Intenta en un minuto.',no_key:'Escribe tu llave de OpenRouter en la sección 4.',no_model:'Elige un modelo en la sección 4.',bad_key:'OpenRouter rechazó la llave.'};console.warn(e);CHAT[CHAT.length-1].content=(m[e&&e.code]||'No pude responder ahora. Intenta de nuevo.')+(e&&e.detail?' ['+e.detail+']':(e&&e.message?' ['+e.message+']':''));}
+  clearInterval(tick);$('chatBtn').disabled=false;drawChat();}
 $('chatSug').innerHTML=SUGS.map(x=>`<button type="button" class="chip">${esc(x)}</button>`).join('');
 $('chatSug').querySelectorAll('.chip').forEach(b=>b.addEventListener('click',()=>sendChat(b.textContent)));
 $('chatForm').addEventListener('submit',e=>{e.preventDefault();const v=$('chatIn').value;$('chatIn').value='';sendChat(v);});

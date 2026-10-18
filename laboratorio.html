@@ -636,8 +636,11 @@ $('modeP').addEventListener('click',()=>mode('p'));$('modeR').addEventListener('
 /* LLM */
 let LLM=null,sampleFn=null,ctl=null,provider=null;
 const WORKER_URL='https://recibo-asistente.isabelmendez.workers.dev/';
-async function askWorker(text,signal){const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:text}]})});
-  if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();return parseJSON(j.text||'');}
+async function workerRaw(messages,signal){const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,max_tokens:3500})});
+  if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();return String(j.text||'');}
+async function askWorker(text,signal){const raw=await workerRaw([{role:'user',content:text}],signal);
+  try{return parseJSON(raw);}catch(e){console.warn('Respuesta no JSON, se pide reparación',raw);
+    return parseJSON(await workerRaw([{role:'user',content:text},{role:'assistant',content:raw.slice(0,8000)},{role:'user',content:'Tu respuesta no fue JSON válido o quedó incompleta. Devuelve SOLO el objeto JSON completo con la forma pedida, sin texto antes ni después, con lecturas breves.'}],signal));}}
 const ESTADOS=Object.keys(ST), LENTES=['Habitabilidad','Factibilidad técnica','Legitimidad social','Gobernanza y costo'];
 function prompt(rec){return `Eres la capa interpretativa de un Human Digital Twin en un ensayo de prácticas de confort residencial. Lee SOLO el registro JSON de abajo. Reglas estrictas.
 1. No calcules ni inventes números nuevos. Puedes citar los que aparecen en el registro.
@@ -654,7 +657,7 @@ Responde solo con un objeto JSON, sin texto adicional, con esta forma
 
 REGISTRO
 ${JSON.stringify(rec)}`;}
-function parseJSON(t){t=String(t).trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}throw{code:'invalid_json'};}
+function parseJSON(t){t=String(t).replace(/<think>[\s\S]*?<\/think>/gi,'').trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}throw{code:'invalid_json'};}
 function validate(data,rec){
   const ids=new Set(rec.items.map(i=>i.id)),w=[],recS=JSON.stringify(rec);
   if(!Array.isArray(data.lentes)||data.lentes.length!==4)w.push('No devolvió exactamente cuatro lentes.');

@@ -483,11 +483,11 @@ function perspectives(o,r,rc,save,kTot){
 let REC=null,AI=null,aiCtl=null,sampleFn=null;
 /* Pega aquí la dirección de tu Cloudflare Worker para usar IA sin pedir llaves a quien visita */
 const WORKER_URL='https://recibo-asistente.isabelmendez.workers.dev/';
-async function askWorker(messages,system,signal){
-  const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,system})});
+async function askWorker(messages,system,signal,maxTokens){
+  const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,system,max_tokens:maxTokens||1200})});
   if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();if(!j.text)throw{code:'refused'};return j.text;}
-async function callLLM(messages,system,signal){
-  if(WORKER_URL)return askWorker(messages,system,signal);
+async function callLLM(messages,system,signal,maxTokens){
+  if(WORKER_URL)return askWorker(messages,system,signal,maxTokens);
   if(sampleFn){const msgs=system?[{role:'user',content:system+'\n\n'+messages[0].content},...messages.slice(1)]:messages;const r=await sampleFn(msgs,{signal,cache:false});return r.text;}
   const key=$('orKey').value.trim(),model=$('orModel').value;if(!key)throw{code:'no_key'};if(!model)throw{code:'no_model'};
   const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',signal,headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json','X-Title':'Tu recibo de luz'},body:JSON.stringify({model,temperature:0.3,messages:(system?[{role:'system',content:system}]:[]).concat(messages)})});
@@ -538,7 +538,7 @@ Responde solo un objeto JSON con esta forma
 
 REGISTRO
 ${JSON.stringify(rec)}`;}
-function parseJ(t){t=String(t).trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}throw{code:'invalid_json'};}
+function parseJ(t){t=String(t).replace(/<think>[\s\S]*?<\/think>/gi,'').trim();try{return JSON.parse(t)}catch(e){}const f=t.match(/```(?:json)?\s*([\s\S]*?)```/);if(f){try{return JSON.parse(f[1])}catch(e){}}const a=t.indexOf('{'),b=t.lastIndexOf('}');if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(e){}}throw{code:'invalid_json'};}
 function checkAI(d,rec){
   const ids=new Set(rec.items.map(i=>i.id)),w=[],nums=new Set((JSON.stringify(rec).replace(/(\d),(\d{3})/g,'$1$2').match(/\d+(?:\.\d+)?/g)||[]));
   if(!Array.isArray(d.perspectivas)||d.perspectivas.length!==4)w.push('No devolvió exactamente cuatro perspectivas.');
@@ -577,7 +577,9 @@ $('aiStatus').textContent='Cargando...';
   else{$('orBox').hidden=false;$('aiStatus').textContent='Fuera de claude.ai, usa una llave gratuita de OpenRouter.';$('chatStatus').textContent='Para platicar, escribe tu llave de OpenRouter en la sección 4.';loadOR();}})();
 $('aiBtn').addEventListener('click',async()=>{
   if(!REC)return;const rec=REC,rules=LASTR;aiCtl=new AbortController();$('aiBtn').disabled=true;$('aiStop').hidden=false;$('aiOut').innerHTML='<p class="small">Leyendo el escenario...</p>';
-  try{let d;if(!WORKER_URL&&sampleFn){d=await sampleFn.json(aiPrompt(rec),{signal:aiCtl.signal,cache:false});}else d=parseJ(await callLLM([{role:'user',content:aiPrompt(rec)}],'',aiCtl.signal));
+  try{let d;if(!WORKER_URL&&sampleFn){d=await sampleFn.json(aiPrompt(rec),{signal:aiCtl.signal,cache:false});}else{const raw=await callLLM([{role:'user',content:aiPrompt(rec)}],'',aiCtl.signal,3000);
+      try{d=parseJ(raw);}catch(e1){console.warn('Respuesta no JSON, se pide reparación',raw);
+        d=parseJ(await callLLM([{role:'user',content:aiPrompt(rec)},{role:'assistant',content:String(raw).slice(0,6000)},{role:'user',content:'Tu respuesta no fue JSON válido o quedó incompleta. Devuelve SOLO el objeto JSON completo con la forma pedida, sin texto antes ni después, con textos breves.'}],'',aiCtl.signal,3000));}}
     if(!d||!Array.isArray(d.perspectivas))throw{code:'invalid_json'};
     AI={data:d,rules,sig:JSON.stringify(rec),model:WORKER_URL?'IA':(sampleFn?'Claude':$('orModel').value),warn:checkAI(d,rec)};renderAI();}
   catch(e){if(e&&e.name==='AbortError')e={code:'cancelled'};const m={cancelled:'Lectura detenida.',not_granted:'No se dio permiso para usar Claude en esta página.',rate_limited:'Se alcanzó el límite de solicitudes. Intenta más tarde.',invalid_json:'La respuesta no tuvo el formato esperado. Intenta de nuevo.',no_key:'Escribe tu llave de OpenRouter.',no_model:'Elige un modelo.',bad_key:'OpenRouter rechazó la llave.'};

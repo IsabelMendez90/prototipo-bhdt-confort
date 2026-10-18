@@ -1,0 +1,33 @@
+{
+  "upload_type": "software",
+  "title": "Prototipo B-HDT de confort. Gemelo digital edificio-humano para ensayar prácticas de confort residencial en México",
+  "creators": [
+    {
+      "name": "Méndez Garduño, Juana Isabel",
+      "affiliation": "Tecnológico de Monterrey, Escuela de Arquitectura, Arte y Diseño",
+      "orcid": "0000-0001-5337-2527"
+    }
+  ],
+  "description": "<p>Prototipo de la capa interpretativa de un gemelo digital edificio-humano (B-HDT) para hogares de México. Incluye un modelo térmico 2R2C calibrado contra EnergyPlus con ASHRAE Guideline 14 para una vivienda de referencia en Monterrey derivada de Méndez et al. (2024), el cálculo del recibo con la tarifa CFE 1C, criterios de confort adaptativo ASHRAE 55, CIBSE TM59 y OMS, cuatro perspectivas por reglas (habitabilidad, factibilidad técnica, legitimidad social y gobernanza y costo), una lectura con LLM con citas al registro y revisión automática, un asistente conversacional y perspectiva de género. Es un modelo digital calibrado y no un gemelo conectado a una vivienda real.</p><p>English. Prototype of the interpretive layer of a building-human digital twin for rehearsing residential comfort practices in Mexico.</p>",
+  "keywords": [
+    "digital twin",
+    "human digital twin",
+    "building energy simulation",
+    "thermal comfort",
+    "adaptive comfort",
+    "large language models",
+    "energy affordability",
+    "Mexico",
+    "EnergyPlus",
+    "gemelo digital"
+  ],
+  "language": "spa",
+  "license": "MIT",
+  "related_identifiers": [
+    {
+      "identifier": "10.1016/j.heliyon.2024.e31599",
+      "relation": "isDerivedFrom",
+      "scheme": "doi"
+    }
+  ]
+}

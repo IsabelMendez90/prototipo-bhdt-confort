@@ -482,7 +482,7 @@ function perspectives(o,r,rc,save,kTot){
 /* Lectura con IA de las cuatro perspectivas */
 let REC=null,AI=null,aiCtl=null,sampleFn=null;
 /* Pega aquí la dirección de tu Cloudflare Worker para usar IA sin pedir llaves a quien visita */
-const WORKER_URL='';
+const WORKER_URL='https://recibo-asistente.isabelmendez.workers.dev/';
 async function askWorker(messages,system,signal){
   const r=await fetch(WORKER_URL,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({messages,system})});
   if(r.status===429)throw{code:'rate_limited'};if(!r.ok)throw{code:'upstream_error'};const j=await r.json();if(!j.text)throw{code:'refused'};return j.text;}
